@@ -1,9 +1,16 @@
+# ARVO 4.0
+
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.path import Path
+from svgpathtools import svg2paths
+from shapely.geometry import Polygon
+from shapely import affinity
+import numpy as np
 import random
 
-st.set_page_config(page_title="ARVO 3.0", layout="wide")
+st.set_page_config(page_title="ARVO 4.0", layout="wide")
 
 st.markdown("""
 <style>
@@ -24,19 +31,34 @@ padding:12px 24px;
 </style>
 """, unsafe_allow_html=True)
 
-st.title("ARVO 3.0 - Corte Inteligente")
+st.title("ARVO 4.0 - Corte Inteligente com SVG")
 
-largura_tecido = st.number_input("Largura do tecido", min_value=60, value=120)
-altura_tecido = st.number_input("Altura do tecido", min_value=60, value=90)
+largura_tecido = st.number_input("Largura do tecido", min_value=60, value=140)
+altura_tecido = st.number_input("Altura do tecido", min_value=60, value=100)
 
 modelo = st.selectbox(
-    "Modelo",
+    "Modelo Base",
     ["Camiseta M", "Camiseta G", "Calça", "Saia"]
 )
 
 quantidade = st.number_input("Quantidade", min_value=1, value=2)
 
+svg_file = st.file_uploader("Importar molde SVG", type=["svg"])
+
+cores = [
+    "#ff69c9",
+    "#00c8ff",
+    "#00ff99",
+    "#ffd700",
+    "#9b59b6",
+    "#ff5733",
+    "#2ecc71",
+    "#3498db",
+    "#f39c12"
+]
+
 def gerar_pecas(nome):
+
     if nome == "Camiseta M":
         return [
             ("Frente", 28, 38),
@@ -71,12 +93,40 @@ def gerar_pecas(nome):
             ("Cintura", 30, 8)
         ]
 
+def criar_poligono(nome, x, y, w, h):
+
+    if nome in ["Frente", "Costas"]:
+        pontos = [
+            (x+2, y),
+            (x+w-2, y),
+            (x+w, y+h),
+            (x, y+h)
+        ]
+
+    elif nome == "Manga":
+        pontos = [
+            (x+3, y),
+            (x+w-3, y),
+            (x+w, y+h),
+            (x, y+h)
+        ]
+
+    else:
+        pontos = [
+            (x, y),
+            (x+w, y),
+            (x+w, y+h),
+            (x, y+h)
+        ]
+
+    return Polygon(pontos)
+
 def tentar_layout(pecas, largura, altura):
 
-    espacos = [(0, 0, largura, altura)]
+    espacos = [(0,0,largura,altura)]
     colocadas = []
     area = 0
-    nao_colocadas = []
+    sobras = []
 
     for peca in pecas:
 
@@ -87,29 +137,27 @@ def tentar_layout(pecas, largura, altura):
 
             ex, ey, ew, eh = espacos[i]
 
-            opcoes = [(w0, h0), (h0, w0)]
-
-            for w, h in opcoes:
+            for w, h in [(w0,h0),(h0,w0)]:
 
                 if w <= ew and h <= eh:
 
                     colocadas.append((nome, ex, ey, w, h))
-                    area += w * h
+                    area += w*h
 
                     del espacos[i]
 
-                    direita = (ex + w, ey, ew - w, h)
-                    cima = (ex, ey + h, ew, eh - h)
+                    direita = (ex+w, ey, ew-w, h)
+                    cima = (ex, ey+h, ew, eh-h)
 
-                    if direita[2] > 3 and direita[3] > 3:
+                    if direita[2] > 4 and direita[3] > 4:
                         espacos.append(direita)
 
-                    if cima[2] > 3 and cima[3] > 3:
+                    if cima[2] > 4 and cima[3] > 4:
                         espacos.append(cima)
 
                     espacos = sorted(
                         espacos,
-                        key=lambda x: x[2] * x[3],
+                        key=lambda x: x[2]*x[3],
                         reverse=True
                     )
 
@@ -120,9 +168,34 @@ def tentar_layout(pecas, largura, altura):
                 break
 
         if not encaixou:
-            nao_colocadas.append(nome)
+            sobras.append(nome)
 
-    return colocadas, area, nao_colocadas, espacos
+    return colocadas, area, sobras, espacos
+
+def desenhar_svg(ax, svg_path, offset_x, offset_y, escala=1):
+
+    paths, attributes = svg2paths(svg_path)
+
+    for path in paths:
+
+        pontos = []
+
+        for segment in path:
+            pontos.append((
+                segment.start.real * escala + offset_x,
+                -segment.start.imag * escala + offset_y
+            ))
+
+        if len(pontos) > 2:
+            patch = patches.Polygon(
+                pontos,
+                closed=True,
+                fill=False,
+                edgecolor="#00ffff",
+                linewidth=1.5
+            )
+
+            ax.add_patch(patch)
 
 if st.button("Gerar Melhor Layout"):
 
@@ -134,14 +207,14 @@ if st.button("Gerar Melhor Layout"):
     melhor = None
     melhor_area = 0
 
-    for _ in range(30):
+    for _ in range(40):
 
         random.shuffle(pecas)
 
         teste = sorted(
             pecas,
-            key=lambda x: x[1] * x[2],
-            reverse=random.choice([True, False])
+            key=lambda x: x[1]*x[2],
+            reverse=random.choice([True,False])
         )
 
         resultado = tentar_layout(
@@ -157,7 +230,6 @@ if st.button("Gerar Melhor Layout"):
     colocadas, area_usada, sobras, espacos = melhor
 
     fig, ax = plt.subplots(figsize=(14,8))
-    ax.set_facecolor("#111111")
 
     tecido = patches.Rectangle(
         (0,0),
@@ -170,62 +242,28 @@ if st.button("Gerar Melhor Layout"):
 
     ax.add_patch(tecido)
 
-    cores = [
-        "#ff69c9","#00c8ff","#00ff99",
-        "#ffd700","#9b59b6","#ff5733",
-        "#2ecc71","#3498db","#f39c12"
-    ]
-
     for i, item in enumerate(colocadas):
 
         nome, x, y, w, h = item
         cor = cores[i % len(cores)]
 
-        if nome in ["Frente", "Costas"]:
-            pontos = [
-                (x+2, y),
-                (x+w-2, y),
-                (x+w, y+h),
-                (x, y+h)
-            ]
-            bloco = patches.Polygon(
-                pontos,
-                closed=True,
-                facecolor=cor,
-                edgecolor="white",
-                alpha=0.8
-            )
+        poly = criar_poligono(nome, x, y, w, h)
 
-        elif nome == "Manga":
-            pontos = [
-                (x+2, y),
-                (x+w-2, y),
-                (x+w, y+h),
-                (x, y+h)
-            ]
-            bloco = patches.Polygon(
-                pontos,
-                closed=True,
-                facecolor=cor,
-                edgecolor="white",
-                alpha=0.8
-            )
+        coords = np.array(poly.exterior.coords)
 
-        else:
-            bloco = patches.Rectangle(
-                (x,y),
-                w,
-                h,
-                facecolor=cor,
-                edgecolor="white",
-                alpha=0.8
-            )
+        patch = patches.Polygon(
+            coords,
+            closed=True,
+            facecolor=cor,
+            edgecolor="white",
+            alpha=0.8
+        )
 
-        ax.add_patch(bloco)
+        ax.add_patch(patch)
 
         ax.text(
-            x + w/2,
-            y + h/2,
+            x+w/2,
+            y+h/2,
             nome,
             ha="center",
             va="center",
@@ -238,19 +276,27 @@ if st.button("Gerar Melhor Layout"):
         sx, sy, sw, sh = sobra
 
         bloco = patches.Rectangle(
-            (sx, sy),
+            (sx,sy),
             sw,
             sh,
             fill=False,
             linestyle="dashed",
-            edgecolor="#666666"
+            edgecolor="#555555"
         )
 
         ax.add_patch(bloco)
 
+    if svg_file:
+
+        with open("molde_temp.svg", "wb") as f:
+            f.write(svg_file.read())
+
+        desenhar_svg(ax, "molde_temp.svg", 5, altura_tecido-5, 0.2)
+
     ax.set_xlim(0, largura_tecido)
     ax.set_ylim(0, altura_tecido)
     ax.set_aspect("equal")
+    ax.set_facecolor("#111111")
 
     st.pyplot(fig)
 
@@ -270,6 +316,7 @@ if st.button("Gerar Melhor Layout"):
 
     with c2:
         st.write("Peças não colocadas:")
+
         if len(sobras) == 0:
             st.write("Nenhuma")
         else:
