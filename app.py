@@ -1,49 +1,85 @@
-# ARVO 4.0
 
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from matplotlib.path import Path
-from svgpathtools import svg2paths
 from shapely.geometry import Polygon
-from shapely import affinity
+from shapely.affinity import translate, rotate, scale
+from shapely.ops import unary_union
+from svgpathtools import svg2paths
+from collections import Counter
 import numpy as np
+import tempfile
 import random
 
-st.set_page_config(page_title="ARVO 4.0", layout="wide")
+st.set_page_config(page_title="ARVO 8.0", layout="wide")
 
 st.markdown("""
 <style>
-.stApp{background:#000;color:white;}
-h1,h2,h3,p,label{color:white!important;}
+.stApp{
+background:#000;
+color:white;
+}
+
+h1,h2,h3,p,label{
+color:white!important;
+}
+
 div[data-baseweb="input"] > div{
 background:#1a1a1a;
 border:1px solid #ff69c9;
 border-radius:10px;
 }
+
 .stButton>button{
 background:linear-gradient(135deg,#ff69c9,#1a1a1a);
 color:white;
 border:1px solid #ff69c9;
 border-radius:12px;
 padding:12px 24px;
+font-size:16px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("ARVO 4.0 - Corte Inteligente com SVG")
+st.title("ARVO 8.0 - Smart SVG Nesting")
 
-largura_tecido = st.number_input("Largura do tecido", min_value=60, value=140)
-altura_tecido = st.number_input("Altura do tecido", min_value=60, value=100)
-
-modelo = st.selectbox(
-    "Modelo Base",
-    ["Camiseta M", "Camiseta G", "Calça", "Saia"]
+largura_tecido = st.number_input(
+    "Largura do tecido",
+    min_value=50,
+    value=140
 )
 
-quantidade = st.number_input("Quantidade", min_value=1, value=2)
+altura_tecido = st.number_input(
+    "Altura do tecido",
+    min_value=50,
+    value=100
+)
 
-svg_file = st.file_uploader("Importar molde SVG", type=["svg"])
+quantidade = st.number_input(
+    "Quantidade de repetições",
+    min_value=1,
+    value=2
+)
+
+margem = st.number_input(
+    "Margem de segurança (cm)",
+    min_value=0.0,
+    value=2.0
+)
+
+escala_svg = st.slider(
+    "Escala do SVG",
+    0.1,
+    2.0,
+    0.35,
+    0.05
+)
+
+svg_files = st.file_uploader(
+    "Upload dos moldes SVG",
+    type=["svg"],
+    accept_multiple_files=True
+)
 
 cores = [
     "#ff69c9",
@@ -57,109 +93,148 @@ cores = [
     "#f39c12"
 ]
 
-def gerar_pecas(nome):
+ROTACOES = [0, 90, 180]
 
-    if nome == "Camiseta M":
-        return [
-            ("Frente", 28, 38),
-            ("Costas", 28, 38),
-            ("Manga", 18, 22),
-            ("Manga", 18, 22),
-            ("Gola", 14, 6)
-        ]
 
-    if nome == "Camiseta G":
-        return [
-            ("Frente", 32, 42),
-            ("Costas", 32, 42),
-            ("Manga", 22, 24),
-            ("Manga", 22, 24),
-            ("Gola", 16, 7)
-        ]
+def extrair_poligonos_svg(svg_path):
 
-    if nome == "Calça":
-        return [
-            ("Perna", 24, 50),
-            ("Perna", 24, 50),
-            ("Bolso", 14, 14),
-            ("Bolso", 14, 14),
-            ("Cós", 38, 10)
-        ]
+    paths, _ = svg2paths(svg_path)
 
-    if nome == "Saia":
-        return [
-            ("Frente", 32, 40),
-            ("Costas", 32, 40),
-            ("Cintura", 30, 8)
-        ]
+    polygons = []
 
-def criar_poligono(nome, x, y, w, h):
+    for path in paths:
 
-    if nome in ["Frente", "Costas"]:
-        pontos = [
-            (x+2, y),
-            (x+w-2, y),
-            (x+w, y+h),
-            (x, y+h)
-        ]
+        pontos = []
 
-    elif nome == "Manga":
-        pontos = [
-            (x+3, y),
-            (x+w-3, y),
-            (x+w, y+h),
-            (x, y+h)
-        ]
+        for seg in path:
 
-    else:
-        pontos = [
-            (x, y),
-            (x+w, y),
-            (x+w, y+h),
-            (x, y+h)
-        ]
+            pontos.append((
+                seg.start.real,
+                -seg.start.imag
+            ))
 
-    return Polygon(pontos)
+        if len(pontos) < 3:
+            continue
 
-def tentar_layout(pecas, largura, altura):
+        try:
 
-    espacos = [(0,0,largura,altura)]
+            poly = Polygon(pontos)
+
+            if poly.area <= 1:
+                continue
+
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+
+            minx, miny, maxx, maxy = poly.bounds
+
+            poly = translate(
+                poly,
+                xoff=-minx,
+                yoff=-miny
+            )
+
+            poly = scale(
+                poly,
+                xfact=escala_svg,
+                yfact=escala_svg,
+                origin=(0, 0)
+            )
+
+            polygons.append(poly)
+
+        except:
+            pass
+
+    return polygons
+
+
+def colisao(poly, colocadas):
+
+    for p in colocadas:
+
+        if poly.buffer(margem).intersects(
+            p["poly"].buffer(margem)
+        ):
+            return True
+
+    return False
+
+
+def gerar_pontos(colocadas):
+
+    pontos = [(0, 0)]
+
+    for p in colocadas:
+
+        minx, miny, maxx, maxy = p["poly"].bounds
+
+        pontos.extend([
+            (maxx + margem, miny),
+            (minx, maxy + margem),
+            (maxx + margem, maxy + margem)
+        ])
+
+    pontos = sorted(
+        pontos,
+        key=lambda k: (k[1], k[0])
+    )
+
+    return pontos
+
+
+def nesting(polys):
+
     colocadas = []
-    area = 0
     sobras = []
 
-    for peca in pecas:
+    for item in polys:
 
-        nome, w0, h0 = peca
+        nome = item["nome"]
+        base_poly = item["poly"]
+
         encaixou = False
 
-        for i in range(len(espacos)):
+        for rot in ROTACOES:
 
-            ex, ey, ew, eh = espacos[i]
+            poly_rot = rotate(
+                base_poly,
+                rot,
+                origin=(0, 0)
+            )
 
-            for w, h in [(w0,h0),(h0,w0)]:
+            minx, miny, maxx, maxy = poly_rot.bounds
 
-                if w <= ew and h <= eh:
+            largura = maxx - minx
+            altura = maxy - miny
 
-                    colocadas.append((nome, ex, ey, w, h))
-                    area += w*h
+            pontos = gerar_pontos(colocadas)
 
-                    del espacos[i]
+            for px, py in pontos:
 
-                    direita = (ex+w, ey, ew-w, h)
-                    cima = (ex, ey+h, ew, eh-h)
+                movido = translate(
+                    poly_rot,
+                    xoff=px - minx,
+                    yoff=py - miny
+                )
 
-                    if direita[2] > 4 and direita[3] > 4:
-                        espacos.append(direita)
+                bx1, by1, bx2, by2 = movido.bounds
 
-                    if cima[2] > 4 and cima[3] > 4:
-                        espacos.append(cima)
+                if (
+                    bx1 < 0 or
+                    by1 < 0 or
+                    bx2 > largura_tecido or
+                    by2 > altura_tecido
+                ):
+                    continue
 
-                    espacos = sorted(
-                        espacos,
-                        key=lambda x: x[2]*x[3],
-                        reverse=True
-                    )
+                if not colisao(movido, colocadas):
+
+                    colocadas.append({
+                        "nome": nome,
+                        "poly": movido,
+                        "cor": random.choice(cores)
+                    })
 
                     encaixou = True
                     break
@@ -170,155 +245,156 @@ def tentar_layout(pecas, largura, altura):
         if not encaixou:
             sobras.append(nome)
 
-    return colocadas, area, sobras, espacos
+    return colocadas, sobras
 
-def desenhar_svg(ax, svg_path, offset_x, offset_y, escala=1):
 
-    paths, attributes = svg2paths(svg_path)
+if svg_files:
 
-    for path in paths:
+    st.subheader("Preview dos moldes")
 
-        pontos = []
+    cols = st.columns(4)
 
-        for segment in path:
-            pontos.append((
-                segment.start.real * escala + offset_x,
-                -segment.start.imag * escala + offset_y
-            ))
+    for i, arquivo in enumerate(svg_files):
 
-        if len(pontos) > 2:
+        with cols[i % 4]:
+
+            st.write(arquivo.name)
+
+            svg_text = arquivo.getvalue().decode()
+
+            st.image(svg_text, use_container_width=True)
+
+
+if st.button("Gerar Layout Inteligente"):
+
+    if not svg_files:
+        st.warning("Envie SVGs")
+        st.stop()
+
+    with st.spinner("Calculando encaixe..."):
+
+        polys = []
+
+        for arquivo in svg_files:
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".svg"
+            ) as tmp:
+
+                tmp.write(arquivo.read())
+                caminho = tmp.name
+
+            polygons = extrair_poligonos_svg(caminho)
+
+            for poly in polygons:
+
+                for _ in range(quantidade):
+
+                    polys.append({
+                        "nome": arquivo.name.replace(".svg", ""),
+                        "poly": poly
+                    })
+
+        polys = sorted(
+            polys,
+            key=lambda p: p["poly"].area,
+            reverse=True
+        )
+
+        colocadas, sobras = nesting(polys)
+
+        fig, ax = plt.subplots(figsize=(16, 9))
+
+        fig.patch.set_facecolor("#111111")
+        ax.set_facecolor("#111111")
+
+        tecido = patches.Rectangle(
+            (0, 0),
+            largura_tecido,
+            altura_tecido,
+            fill=False,
+            edgecolor="white",
+            linewidth=2
+        )
+
+        ax.add_patch(tecido)
+
+        for item in colocadas:
+
+            poly = item["poly"]
+
+            coords = np.array(poly.exterior.coords)
+
             patch = patches.Polygon(
-                pontos,
+                coords,
                 closed=True,
-                fill=False,
-                edgecolor="#00ffff",
-                linewidth=1.5
+                facecolor=item["cor"],
+                edgecolor="white",
+                linewidth=1.2,
+                alpha=0.85
             )
 
             ax.add_patch(patch)
 
-if st.button("Gerar Melhor Layout"):
+            centro = poly.centroid
 
-    pecas = []
+            ax.text(
+                centro.x,
+                centro.y,
+                item["nome"],
+                ha="center",
+                va="center",
+                fontsize=7,
+                color="white"
+            )
 
-    for _ in range(quantidade):
-        pecas.extend(gerar_pecas(modelo))
+        ax.set_xlim(0, largura_tecido)
+        ax.set_ylim(0, altura_tecido)
+        ax.set_aspect("equal")
 
-    melhor = None
-    melhor_area = 0
+        st.pyplot(fig)
 
-    for _ in range(40):
+        area_usada = sum([
+            p["poly"].area
+            for p in colocadas
+        ])
 
-        random.shuffle(pecas)
+        area_total = largura_tecido * altura_tecido
 
-        teste = sorted(
-            pecas,
-            key=lambda x: x[1]*x[2],
-            reverse=random.choice([True,False])
-        )
+        desperdicio = area_total - area_usada
 
-        resultado = tentar_layout(
-            teste,
-            largura_tecido,
-            altura_tecido
-        )
+        aproveitamento = (
+            area_usada / area_total
+        ) * 100
 
-        if resultado[1] > melhor_area:
-            melhor = resultado
-            melhor_area = resultado[1]
+        st.subheader("Resultado")
 
-    colocadas, area_usada, sobras, espacos = melhor
+        c1, c2 = st.columns(2)
 
-    fig, ax = plt.subplots(figsize=(14,8))
+        with c1:
 
-    tecido = patches.Rectangle(
-        (0,0),
-        largura_tecido,
-        altura_tecido,
-        fill=False,
-        edgecolor="white",
-        linewidth=2
-    )
+            st.write(f"Peças colocadas: {len(colocadas)}")
+            st.write(f"Área usada: {area_usada:.2f}")
+            st.write(f"Desperdício: {desperdicio:.2f}")
+            st.write(f"Aproveitamento: {aproveitamento:.2f}%")
 
-    ax.add_patch(tecido)
+        with c2:
 
-    for i, item in enumerate(colocadas):
+            contador = Counter()
 
-        nome, x, y, w, h = item
-        cor = cores[i % len(cores)]
+            for p in colocadas:
+                contador[p["nome"]] += 1
 
-        poly = criar_poligono(nome, x, y, w, h)
+            st.write("Repetições")
 
-        coords = np.array(poly.exterior.coords)
+            for nome, qtd in contador.items():
+                st.write(f"{nome}: {qtd}x")
 
-        patch = patches.Polygon(
-            coords,
-            closed=True,
-            facecolor=cor,
-            edgecolor="white",
-            alpha=0.8
-        )
+            st.write("Peças não colocadas")
 
-        ax.add_patch(patch)
-
-        ax.text(
-            x+w/2,
-            y+h/2,
-            nome,
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="white"
-        )
-
-    for sobra in espacos:
-
-        sx, sy, sw, sh = sobra
-
-        bloco = patches.Rectangle(
-            (sx,sy),
-            sw,
-            sh,
-            fill=False,
-            linestyle="dashed",
-            edgecolor="#555555"
-        )
-
-        ax.add_patch(bloco)
-
-    if svg_file:
-
-        with open("molde_temp.svg", "wb") as f:
-            f.write(svg_file.read())
-
-        desenhar_svg(ax, "molde_temp.svg", 5, altura_tecido-5, 0.2)
-
-    ax.set_xlim(0, largura_tecido)
-    ax.set_ylim(0, altura_tecido)
-    ax.set_aspect("equal")
-    ax.set_facecolor("#111111")
-
-    st.pyplot(fig)
-
-    area_total = largura_tecido * altura_tecido
-    desperdicio = area_total - area_usada
-    aproveitamento = (area_usada / area_total) * 100
-
-    st.subheader("Resultado")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.write(f"Peças colocadas: {len(colocadas)}")
-        st.write(f"Área usada: {area_usada}")
-        st.write(f"Desperdício: {desperdicio}")
-        st.write(f"Aproveitamento: {aproveitamento:.2f}%")
-
-    with c2:
-        st.write("Peças não colocadas:")
-
-        if len(sobras) == 0:
-            st.write("Nenhuma")
-        else:
-            for s in sobras:
-                st.write(s)
+            if len(sobras) == 0:
+                st.write("Nenhuma")
+            else:
+                for s in sobras:
+                    st.write(s)
